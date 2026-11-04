@@ -1,0 +1,9 @@
+node_modules/
+web/dist/
+*.log
+.DS_Store
+
+# IDE 个人配置
+.idea/
+.vs/
+*.user

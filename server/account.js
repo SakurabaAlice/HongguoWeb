@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-only
 // 红果账号相关的服务端部分。服务器不保存、也接触不到任何账号凭据：
 //  - /wisp/          端到端加密隧道：浏览器内的 libcurl.js 完成 TLS，这里只转发加密后的 TCP 字节，
 //                    且只允许连接红果域名的 443 端口

@@ -11,7 +11,9 @@ RUN npm ci --registry=$NPM_REGISTRY --no-audit --no-fund
 COPY vite.config.mjs ./
 COPY web ./web
 ARG BASE_PATH=
-RUN BASE_PATH=$BASE_PATH npx vite build
+# 部署修改过的版本时，指向你自己的源码地址（AGPL-3.0 要求）
+ARG VITE_SOURCE_URL=
+RUN BASE_PATH=$BASE_PATH VITE_SOURCE_URL=$VITE_SOURCE_URL npx vite build
 
 # ---------- 运行 ----------
 FROM node:22-alpine

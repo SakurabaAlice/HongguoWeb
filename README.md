@@ -118,6 +118,7 @@ docker run -d --name hongguoweb --restart unless-stopped --network host --memory
 - 使用 `--network host` 并只监听 `127.0.0.1`，这样同机的反向代理可以直接访问，服务也不会暴露到公网；代理请求来自本机，客户端 IP 识别正常。
 - 在中国大陆构建时，可以加 `--build-arg NPM_REGISTRY=https://registry.npmmirror.com` 使用 npm 镜像源。
 - 挂在域名根路径时，去掉 `BASE_PATH` 参数即可。
+- 如果部署的是**修改过的版本**，请加上 `--build-arg VITE_SOURCE_URL=<你的源码地址>`，让页面上的「源码」链接指向你的代码（AGPL-3.0 的要求，见「致谢与许可」）。
 - 空闲时内存占用约 35MB。服务器中转需要缓存视频分片，`--memory` 不建议低于 512MB。
 
 ### 其他注意事项
@@ -202,7 +203,7 @@ web/
 ## 致谢与许可
 
 `server/native/` 和 `server/services/` 下的协议、解密与流媒体代码来自
-[zfdang/hongguo-open-player](https://github.com/zfdang/hongguo-open-player)（GPL-3.0，commit `61d9d36`），
+[zfdang/hongguo-open-player](https://github.com/zfdang/hongguo-open-player)（commit `61d9d36`），
 原始出处见各文件头部注释。该项目又参考了 zhangbaio/hongguo、N3urda/hongguoTV、woshishiq1/drpys、
 jackotom/hongguo-drama、yangbin1322/hongguo-player 等社区项目。
 
@@ -212,7 +213,11 @@ jackotom/hongguo-drama、yangbin1322/hongguo-player 等社区项目。
 加密隧道使用 [libcurl.js](https://github.com/ading2210/libcurl.js) 与
 [wisp-js](https://github.com/MercuryWorkshop/wisp-js)（均为 LGPL-3.0）。
 
-由于引用了 GPL-3.0 代码，本项目同样以 **GPL-3.0** 发布，详见 [LICENSE](LICENSE)。
+本项目以 **AGPL-3.0** 发布，详见 [LICENSE](LICENSE)。
+
+- hongguo-open-player 的 `LICENSE` 文件为 AGPL-3.0，其源码文件头与 `package.json` 则标注 GPL-3.0。本项目按更严格的 AGPL-3.0 处理。
+- 来自 GPL-3.0 项目的代码，依据 GPLv3 第 13 条与本项目组合使用；这些文件头部保留了原有的许可证声明。
+- AGPL-3.0 要求：如果你修改本项目并部署为网站供他人使用，需要向这些用户提供修改后的源代码。页面导航栏的「源码」链接默认指向本仓库，部署修改版时请通过构建参数 `VITE_SOURCE_URL` 改为你自己的源码地址。
 
 ## 免责声明
 

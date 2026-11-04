@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-only
 // 简易控制台日志，接口与上游 logger 保持一致（info / warn / error）。
 // 通过环境变量 LOG_LEVEL=debug|info|warn|error 控制输出级别。
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };

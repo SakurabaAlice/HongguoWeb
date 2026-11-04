@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "红果短剧第三方网页版：在 PC 浏览器中浏览、搜索与观看红果短剧",
-  "license": "GPL-3.0-only",
+  "license": "AGPL-3.0-only",
   "type": "commonjs",
   "engines": {
     "node": ">=20"

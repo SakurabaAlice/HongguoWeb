@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-only
 // 直连播放 Service Worker
 //
 // 拦截页面里 <video src="/media/:vid"> 发出的 Range 请求：

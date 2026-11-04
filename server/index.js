@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: AGPL-3.0-only
 // 红果短剧网页版 —— 本地 Web 服务
 // 负责：API 代理（目录 / 搜索 / 详情 / 演员）、CENC 视频流实时解密、托管前端静态页面。
 const express = require('express');

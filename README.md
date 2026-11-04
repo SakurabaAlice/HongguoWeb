@@ -34,46 +34,97 @@ npm start          # 启动服务 → http://127.0.0.1:8899
 - 🔵 **服务器中转**：直连不可用时自动回退，指示器会注明原因。
 - 🟡 **正在刷新链接 / 链接已过期**：播放链接大约 6 小时后过期，到期前或 CDN 拒绝访问时会自动重新取址。
 
-直连依赖 Service Worker 和 WebCrypto，浏览器只在 **HTTPS**（或 localhost）下才允许使用它们，所以远端部署时必须配置 HTTPS。下面以 Caddy 为例，它会自动申请证书：
+如果确认所有客户端都能直连，可以设置 `RELAY=0` 彻底关闭中转，防止视频流量意外经过服务器。
 
-```
-# /etc/caddy/Caddyfile
-hongguo.example.com {
-    reverse_proxy 127.0.0.1:8899
-}
-```
+### 放在反向代理之后
 
-服务本身仍然只监听 127.0.0.1，由 Caddy 对外提供服务。启动时要把对外域名加入 Host 白名单：`ALLOWED_HOSTS=hongguo.example.com npm start`。如果确认所有客户端都能直连，可以设置 `RELAY=0` 彻底关闭中转，防止流量意外经过服务器。
+推荐让服务只监听本机（`HOST=127.0.0.1`），由同一台机器上的反向代理对外提供 HTTPS。对反向代理的要求：
 
-### 用 Docker 部署在子路径
+1. **必须是 HTTPS**。直连播放依赖 Service Worker 和 WebCrypto，浏览器只在 HTTPS（或 localhost）下允许使用。通过 `http://IP:端口` 访问时会自动退回服务器中转。
+2. **保留原始 `Host` 头**，并把对外域名写进 `ALLOWED_HOSTS`（逗号分隔）。服务只监听本机时会校验 Host，以防 DNS rebinding；加密隧道还会核对 `Origin` 与 `Host` 是否同源。
+3. **支持 WebSocket**。账号功能的加密隧道走 `<站点路径>/wisp/` 的 WebSocket 连接。
+4. **传递 `X-Forwarded-For`**。服务只信任来自本机（loopback）的代理头，据此识别客户端 IP，用于匿名设备注册的限流。反向代理与服务不在同一台机器时，需要相应调整代码中的 `trust proxy` 设置。
+5. **不要缓存 `sw.js`**。服务已经对它返回 `Cache-Control: no-cache`，代理不要覆盖。`assets/` 下带哈希的文件可以长期缓存。
 
-站点也可以挂在域名的子路径下，例如 `https://example.com/hongguo/`。构建时用 `BASE_PATH` 指定子路径，由反向代理去掉这个前缀后再转发：
+#### 挂在子路径
 
-```bash
-docker build --build-arg BASE_PATH=/hongguo \
-  --build-arg NPM_REGISTRY=https://registry.npmmirror.com -t hongguoweb .
-docker run -d --name hongguoweb --restart unless-stopped --network host --memory 640m \
-  -e HOST=127.0.0.1 -e PORT=18899 -e ALLOWED_HOSTS=example.com,www.example.com \
-  hongguoweb
-```
+站点也可以挂在域名的子路径下，例如 `https://example.com/hongguo/`：
 
-```
-# Caddyfile（站点块内）
-handle /hongguo {
-    redir * /hongguo/ 308
-}
-handle_path /hongguo/* {
-    reverse_proxy http://127.0.0.1:18899
-}
-```
+- **构建**时用 `BASE_PATH` 指定子路径，前端生成的所有地址（API、视频、Service Worker 作用域、加密隧道、页面路由）都会带上这个前缀：`BASE_PATH=/hongguo npm run build`。
+- **反向代理**负责去掉这个前缀再转发，服务本身仍按根路径处理请求。
+- 访问不带结尾斜杠的 `/hongguo` 时，建议跳转到 `/hongguo/`。
 
 本地开发不需要设置 `BASE_PATH`。在 Git Bash 里构建子路径版本时要加 `MSYS_NO_PATHCONV=1`，否则 `/hongguo` 会被改写成 Windows 路径。
 
-另外需要注意：
+#### 配置示例
 
-- 通过 http://IP:端口 直接访问时无法直连，会自动改用中转（RELAY=0 时则无法播放）。
+Caddy（会自动申请证书，并默认处理 Host、`X-Forwarded-For` 与 WebSocket）：
+
+```
+# 挂在域名根路径
+hongguo.example.com {
+    reverse_proxy 127.0.0.1:8899
+}
+
+# 挂在子路径 /hongguo/
+example.com {
+    handle /hongguo {
+        redir * /hongguo/ 308
+    }
+    handle_path /hongguo/* {
+        reverse_proxy 127.0.0.1:8899
+    }
+}
+```
+
+Nginx（挂在子路径 /hongguo/，证书配置从略）：
+
+```nginx
+# http 块内
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+# server 块内
+location = /hongguo {
+    return 308 /hongguo/;
+}
+location /hongguo/ {
+    proxy_pass http://127.0.0.1:8899/;       # 结尾的 / 会去掉 /hongguo 前缀
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;  # 加密隧道的 WebSocket
+    proxy_set_header Connection $connection_upgrade;
+    proxy_buffering off;                     # 服务器中转时边解密边返回视频
+}
+```
+
+启动服务时带上对外域名：`ALLOWED_HOSTS=example.com,www.example.com npm start`。
+
+### 用 Docker 运行
+
+镜像分两阶段构建：先在容器内构建前端，运行阶段只安装生产依赖。子路径通过构建参数传入：
+
+```bash
+docker build --build-arg BASE_PATH=/hongguo -t hongguoweb .
+docker run -d --name hongguoweb --restart unless-stopped --network host --memory 640m \
+  -e HOST=127.0.0.1 -e PORT=8899 -e ALLOWED_HOSTS=example.com,www.example.com \
+  hongguoweb
+```
+
+- 使用 `--network host` 并只监听 `127.0.0.1`，这样同机的反向代理可以直接访问，服务也不会暴露到公网；代理请求来自本机，客户端 IP 识别正常。
+- 在中国大陆构建时，可以加 `--build-arg NPM_REGISTRY=https://registry.npmmirror.com` 使用 npm 镜像源。
+- 挂在域名根路径时，去掉 `BASE_PATH` 参数即可。
+- 空闲时内存占用约 35MB。服务器中转需要缓存视频分片，`--memory` 不建议低于 512MB。
+
+### 其他注意事项
+
 - 强制刷新（Ctrl+Shift+R）会让本页绕过 Service Worker，普通刷新一次即可恢复直连。
 - 签名取址和匿名设备注册仍由服务器发起。如果服务器 IP 被红果风控，所有功能都会受影响，与传输方式无关。
+- 登录状态按网址分别保存，在不同域名下访问需要分别扫码登录。
 
 ## 红果账号：每个浏览器登录自己的账号
 
@@ -100,7 +151,7 @@ handle_path /hongguo/* {
 - 隧道只允许连接 `hongguoduanju.com`、`*.fqnovel.com`、`*.snssdk.com` 的 443 端口，拒绝其他域名、端口、IP 直连和跨站连接，防止服务器被当作开放代理。
 - 隧道组件（约 1.4MB 的 wasm）只在用到账号功能时才加载。
 
-部署在反向代理之后时，代理需要支持 WebSocket（Caddy 默认支持）。
+部署在反向代理之后时，代理需要支持 WebSocket，见「放在反向代理之后」一节。
 
 ## 功能
 

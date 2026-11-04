@@ -1,11 +1,13 @@
 // 后端 API 封装
+import { BASE } from './base.js';
+
 function buildUrl(path, params = {}) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== null && value !== '') query.set(key, String(value));
   }
   const qs = query.toString();
-  return qs ? `${path}?${qs}` : path;
+  return qs ? `${BASE}${path}?${qs}` : `${BASE}${path}`;
 }
 
 async function get(path, params, { signal } = {}) {

@@ -1,5 +1,6 @@
 // 视频传输方式：直连（Service Worker 直接从 CDN 拉取并在浏览器内解密）或服务器中转
 import { reactive } from 'vue';
+import { BASE } from './base.js';
 
 export const media = reactive({
   checked: false, // 检测完成前不设置 <video> 的 src，避免先走中转再切换
@@ -20,7 +21,7 @@ function waitForController() {
 }
 
 export async function initMedia() {
-  const config = fetch('/api/config').then((r) => r.json()).then((c) => { media.relayEnabled = c.relay !== false; }).catch(() => {});
+  const config = fetch(`${BASE}/api/config`).then((r) => r.json()).then((c) => { media.relayEnabled = c.relay !== false; }).catch(() => {});
 
   if (!window.isSecureContext) {
     media.unavailableReason = '页面不是通过 HTTPS 访问，浏览器不允许启用 Service Worker';
@@ -35,7 +36,7 @@ export async function initMedia() {
       if (s?.type === 'status') media.statuses[`${s.vid}:${s.quality}`] = s;
     };
     try {
-      await navigator.serviceWorker.register('/sw.js');
+      await navigator.serviceWorker.register(`${BASE}/sw.js`, { scope: `${BASE}/` });
       await Promise.race([waitForController(), timeout(4000)]);
     } catch (error) {
       media.unavailableReason = `Service Worker 注册失败：${error.message}`;

@@ -2,6 +2,7 @@
 // 扫码登录与账号接口字段参考 jackotom/hongguo-drama（account-session.js）与
 // tsukiyo-zero/hongguoTV（WebLogin.kt / CloudAccount.kt），均为 GPL-3.0。
 import { tunnelFetch, createSession, cookieHeaderFrom } from './tunnel.js';
+import { BASE } from '../base.js';
 
 const WEB = 'https://hongguoduanju.com';
 const WEB_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
@@ -115,7 +116,7 @@ export async function fetchProfile(cookie) {
 // ================= App 账号接口 =================
 
 async function signRequest(path, params, identity, body) {
-  const res = await fetch('/api/account/sign', {
+  const res = await fetch(`${BASE}/api/account/sign`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path, params, identity, body }),
@@ -163,7 +164,7 @@ export async function fetchAppProfile(account) {
 
 /** 注册本浏览器专用的匿名设备身份（账号接口需要） */
 export async function registerDevice() {
-  const res = await fetch('/api/account/device', { method: 'POST' });
+  const res = await fetch(`${BASE}/api/account/device`, { method: 'POST' });
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new Error(data?.error || '设备注册失败');
   return data;

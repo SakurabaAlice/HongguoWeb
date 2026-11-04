@@ -45,6 +45,30 @@ hongguo.example.com {
 
 服务本身仍然只监听 127.0.0.1，由 Caddy 对外提供服务。启动时要把对外域名加入 Host 白名单：`ALLOWED_HOSTS=hongguo.example.com npm start`。如果确认所有客户端都能直连，可以设置 `RELAY=0` 彻底关闭中转，防止流量意外经过服务器。
 
+### 用 Docker 部署在子路径
+
+站点也可以挂在域名的子路径下，例如 `https://example.com/hongguo/`。构建时用 `BASE_PATH` 指定子路径，由反向代理去掉这个前缀后再转发：
+
+```bash
+docker build --build-arg BASE_PATH=/hongguo \
+  --build-arg NPM_REGISTRY=https://registry.npmmirror.com -t hongguoweb .
+docker run -d --name hongguoweb --restart unless-stopped --network host --memory 640m \
+  -e HOST=127.0.0.1 -e PORT=18899 -e ALLOWED_HOSTS=example.com,www.example.com \
+  hongguoweb
+```
+
+```
+# Caddyfile（站点块内）
+handle /hongguo {
+    redir * /hongguo/ 308
+}
+handle_path /hongguo/* {
+    reverse_proxy http://127.0.0.1:18899
+}
+```
+
+本地开发不需要设置 `BASE_PATH`。在 Git Bash 里构建子路径版本时要加 `MSYS_NO_PATHCONV=1`，否则 `/hongguo` 会被改写成 Windows 路径。
+
 另外需要注意：
 
 - 通过 http://IP:端口 直接访问时无法直连，会自动改用中转（RELAY=0 时则无法播放）。

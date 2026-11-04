@@ -1,6 +1,8 @@
 // 端到端加密隧道：libcurl.js（WebAssembly）在浏览器内完成 TLS，
 // 服务器的 /wisp/ 只转发加密后的 TCP 字节，看不到请求内容（包括 Cookie）。
 // 首次使用账号功能时才加载（wasm 约 1.4MB）。
+import { BASE } from '../base.js';
+
 let loading = null;
 
 export function loadTunnel() {
@@ -13,7 +15,7 @@ export function loadTunnel() {
     libcurl.stderr = () => {};
     await libcurl.load_wasm(wasmUrl);
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-    libcurl.set_websocket(`${scheme}://${location.host}/wisp/`);
+    libcurl.set_websocket(`${scheme}://${location.host}${BASE}/wisp/`);
     return libcurl;
   })().catch((error) => {
     loading = null;

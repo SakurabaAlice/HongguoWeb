@@ -19,6 +19,8 @@ const REFRESH_MARGIN = 120; // 链接过期前多少秒主动刷新
 const MAX_PLANS = 8;
 const CONTAINERS = new Set(['moov', 'trak', 'mdia', 'minf', 'stbl', 'edts', 'dinf', 'udta']);
 
+// 站点挂载路径（如 /hongguo），由注册时的 scope 决定
+const BASE = new URL(self.registration.scope).pathname.replace(/\/$/, '');
 const channel = new BroadcastChannel(CHANNEL);
 const plans = new Map(); // `${vid}:${quality}` -> { promise, plan, retryToken }
 
@@ -27,7 +29,7 @@ self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim(
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
-  if (url.origin !== self.location.origin || !url.pathname.startsWith('/media/')) return;
+  if (url.origin !== self.location.origin || !url.pathname.startsWith(`${BASE}/media/`)) return;
   event.respondWith(handleMedia(event.request, url));
 });
 
@@ -332,7 +334,7 @@ async function fetchRange(url, start, end, signal) {
 async function fetchPlayinfo(vid, quality) {
   let res;
   try {
-    res = await fetch(`/api/playinfo/${vid}?quality=${encodeURIComponent(quality)}`, { cache: 'no-store' });
+    res = await fetch(`${BASE}/api/playinfo/${vid}?quality=${encodeURIComponent(quality)}`, { cache: 'no-store' });
   } catch {
     throw fail('无法连接服务器获取播放地址', 'SERVER_UNREACHABLE');
   }
@@ -567,7 +569,7 @@ function parseRange(header, total) {
 }
 
 async function handleMedia(request, url) {
-  const vid = /^\/media\/(\d{1,30})$/.exec(url.pathname)?.[1];
+  const vid = /^\/media\/(\d{1,30})$/.exec(url.pathname.slice(BASE.length))?.[1];
   const quality = url.searchParams.get('quality') || 'auto';
   if (!vid || !['auto', '1080p', '720p'].includes(quality)) return jsonError(fail('参数无效', 'BAD_REQUEST'), 400);
 

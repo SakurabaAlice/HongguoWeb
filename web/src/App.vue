@@ -5,7 +5,7 @@ import { api } from './api.js';
 import { toast, toastMessage } from './toast.js';
 import AccountMenu from './components/AccountMenu.vue';
 import { account } from './account/store.js';
-import { SOURCE_URL } from './base.js';
+import SiteFooter from './components/SiteFooter.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -57,7 +57,6 @@ async function submit() {
       <RouterLink to="/" :class="{ active: route.name === 'home' }">发现</RouterLink>
       <RouterLink to="/actors" :class="{ active: route.name === 'actors' || route.name === 'actor' }">剧星榜</RouterLink>
       <RouterLink to="/library" :class="{ active: route.name === 'library' }">我的</RouterLink>
-      <a :href="SOURCE_URL" target="_blank" rel="noopener" title="本项目源代码（AGPL-3.0）">源码</a>
     </nav>
     <form class="search" @submit.prevent="submit">
       <input v-model="keyword" type="search" placeholder="搜索剧名、演员，或粘贴分享链接" :disabled="resolving" />
@@ -72,6 +71,8 @@ async function submit() {
       </KeepAlive>
     </RouterView>
   </main>
+  <!-- 播放页是整屏布局，页脚放在侧栏底部 -->
+  <SiteFooter v-if="route.name !== 'play'" />
   <Transition name="fade">
     <div v-if="toastMessage" class="toast">{{ toastMessage }}</div>
   </Transition>

@@ -7,6 +7,7 @@ import { media, markDirectFailure } from '../media.js';
 import { account, cloudProgress, syncProgress, refreshFavorites, isFavorite, setFavorite, openLogin } from '../account/store.js';
 import { toast } from '../toast.js';
 import TransportBadge from '../components/TransportBadge.vue';
+import SiteFooter from '../components/SiteFooter.vue';
 
 const GROUP_SIZE = 50;
 const RATES = [0.75, 1, 1.25, 1.5, 2, 3];
@@ -425,6 +426,7 @@ onBeforeUnmount(() => {
           >{{ e.vid_index }}</button>
         </div>
         <p class="keys">快捷键：空格 播放/暂停 · ←/→ 快退/快进 5 秒 · ↑/↓ 上一集/下一集 · F 全屏 · M 静音</p>
+        <SiteFooter compact />
       </template>
     </aside>
   </div>

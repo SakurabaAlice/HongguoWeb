@@ -4,11 +4,15 @@ import { useRoute, useRouter } from 'vue-router';
 import { api } from './api.js';
 import { toast, toastMessage } from './toast.js';
 import AccountMenu from './components/AccountMenu.vue';
+import { account } from './account/store.js';
 
 const route = useRoute();
 const router = useRouter();
 const keyword = ref('');
 const resolving = ref(false);
+
+// 红果登录失效（被动退出）时告知原因
+watch(() => account.error, (reason) => { if (reason) toast(reason, 5000); });
 
 watch(() => route.query.q, (q) => { if (route.name === 'search') keyword.value = String(q || ''); }, { immediate: true });
 

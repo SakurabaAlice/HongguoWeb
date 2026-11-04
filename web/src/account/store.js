@@ -8,7 +8,6 @@ const KEY = 'hongguo-web:account';
 export const account = reactive({
   status: 'anonymous', // anonymous | signed-in
   profile: null,
-  verifying: false,
   error: '',
   history: [],
   historyLoadedAt: 0,
@@ -19,7 +18,6 @@ export const account = reactive({
   favoritesLoading: false,
   favoritesError: '',
   lastUpload: null, // 最近一次进度回写 { at, ok, message }
-  profileFields: [], // App 用户资料接口返回的字段名，便于排查
   loginOpen: false,
 });
 
@@ -71,7 +69,6 @@ async function refreshAppProfile() {
   try {
     const app = await hg.fetchAppProfile(owner);
     if (credentials !== owner) return;
-    account.profileFields = app.fields;
     const profile = { ...owner.profile, ...(app.nickname ? { nickname: app.nickname } : {}),
       ...(app.avatar ? { avatar: app.avatar } : {}), hongguoId: app.hongguoId || owner.profile.hongguoId || '' };
     owner.profile = profile;
@@ -99,13 +96,12 @@ export function restoreAccount() {
   try { saved = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch { /* ignore */ }
   if (!saved?.cookie || !saved?.device || !saved?.profile) return;
   apply({ cookie: saved.cookie, device: saved.device, profile: saved.profile });
-  account.verifying = true;
   hg.fetchProfile(saved.cookie).then(() => {
     if (credentials?.cookie !== saved.cookie) return;
     return Promise.all([refreshAppProfile(), refreshHistory()]);
   }).catch((error) => {
     if (error instanceof hg.AuthError && credentials?.cookie === saved.cookie) signOut(`红果登录已失效，请重新扫码：${error.message}`);
-  }).finally(() => { account.verifying = false; });
+  });
 }
 
 // ================= 云端观看记录 =================

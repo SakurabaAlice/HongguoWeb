@@ -42,7 +42,7 @@ function passportData(res) {
   return payload.data;
 }
 
-export function cleanCover(value) {
+function cleanCover(value) {
   const text = String(value || '').trim();
   const url = text.startsWith('//') ? `https:${text}` : text;
   if (!/^https?:\/\//i.test(url)) return '';
@@ -158,7 +158,6 @@ export async function fetchAppProfile(account) {
     nickname: cleanText(d.user_name || d.nickname),
     avatar: cleanCover(d.expand_avatar_url || d.avatar_url || d.avatar),
     hongguoId: pickId('display_id', 'short_id', 'unique_id', 'hongguo_id', 'red_fruit_id', 'user_number', 'biz_user_id'),
-    fields: Object.keys(d), // 便于排查字段变化
   };
 }
 

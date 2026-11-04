@@ -5,7 +5,7 @@ import { BASE } from '../base.js';
 
 let loading = null;
 
-export function loadTunnel() {
+function loadTunnel() {
   loading ||= (async () => {
     const [{ libcurl }, { default: wasmUrl }] = await Promise.all([
       import('libcurl.js'),

@@ -5,19 +5,24 @@
 // via N3urda/hongguoTV eea73e6a45569a2cbbb9440f7cd5290c459b0b70.
 // Changes: registered in-memory playback identity; pure JS SM3;
 // bounded HTTPS transport; exact episode matching; supported codec selection.
+// 2026-11: playback request follows zfdang/hongguo-open-player@79ca8f3 (#92, #103):
+// reading.snssdk.com endpoint, 7.4.3.32 profile, gzip body, Argus/Ladon signing
+// (argus.js) and protocol identity cookies.
 // Crypto tables and SDK protocol constants below are not user credentials.
 const crypto = require('node:crypto');
+const { gzipSync } = require('node:zlib');
 const logger = require('../services/logger');
 const { getPlaybackDevice } = require('./playback-device');
 const sm3 = require('./sm3');
+const { PlayerSigner } = require('./argus');
 const { normalizeDownloadQuality, meetsDownloadQuality } = require('./download-quality');
 const localId = () => String(1000000000000000n + BigInt('0x' + crypto.randomBytes(6).toString('hex')));
 const PROCESS_NONCE = crypto.randomBytes(18).toString('base64url');
 const PROCESS_STARTED = Date.now();
-const VIDEO_API = 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/';
+const VIDEO_API = 'https://reading.snssdk.com/novel/player/multi_video_model/player/v1';
 const SEARCH_API = 'https://api5-normal-sinfonlinea.fqnovel.com/reading/bookapi/search/tab/v';
 const VIDEO_UA = 'com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
-const PLAYBACK_UA = 'com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)';
+const PLAYBACK_UA = 'com.phoenix.read/74332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
 const SEARCH_UA = 'com.phoenix.read/72232 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)';
 const DEVICE = {
     ac: 'wifi', channel: 'update_64', aid: '8662', app_name: 'novelread',
@@ -27,6 +32,8 @@ const DEVICE = {
     update_version_code: '71332', host_abi: 'arm64-v8a', dragon_device_type: 'phone', pv_player: '71332',
     compliance_status: '0', need_personal_recommend: '1', player_so_load: '1', is_android_pad_screen: '0',
 };
+const PLAYBACK_DEVICE = { ...DEVICE, version_code: '74332', version_name: '7.4.3.32',
+    manifest_version_code: '74332', update_version_code: '74332', pv_player: '74332' };
 function str(value, fallback = '') { return String(value == null ? fallback : value).trim(); }
 function cleanUrl(value) { return str(value).replace(/\\\//g, '/').replace(/\\u0026/g, '&').replace(/&amp;/g, '&'); }
 function jsonBody(value) { try { return JSON.parse(value); } catch { return null; } }
@@ -130,26 +137,20 @@ function helios(khronos) {
 }
 
 function branchOf(url, body, khronos) { const bodyMd5 = body ? crypto.createHash('md5').update(body).digest() : Buffer.alloc(16); const q = sm3(url.split('?')[1]); const iv = getIv(getIv(getIv(0x20230928, q), bodyMd5), le32(khronos)); const low = iv & 15; return low - (((low * 171) >> 9) * 3); }
+// 2026-11-10 起占位的 x-argus / x-ladon 会被播放接口拒绝（HTTP 200 空响应），须用完整签名
 function playbackRequest(payload, identity) {
-    const body = Buffer.from(payload);
+    const body = gzipSync(Buffer.from(payload));
     const khronos = Math.floor(Date.now() / 1000);
-    const ticket = Date.now();
-    let query, url;
-    for (let n = 0; n < 128; n += 1) {
-        query = pythonUrlEncode({ ...DEVICE, ...identity, _rticket: String(ticket + n) });
-        url = `${VIDEO_API}?${query}`;
-        if (branchOf(url, body, khronos) === 0) break;
-        if (n === 127) throw new Error('无法生成播放请求签名');
-    }
-    const device = { ...DEVICE, ...identity };
-    return { url, body, headers: {
+    const { device_id, iid, cdid, cookie } = identity;
+    const query = pythonUrlEncode({ ...PLAYBACK_DEVICE, device_id, iid, cdid, _rticket: String(Date.now()) });
+    const headers = {
         'User-Agent': PLAYBACK_UA, Accept: 'application/json; charset=utf-8,application/x-protobuf',
-        'Content-Type': 'application/json; charset=UTF-8', 'sdk-version': '2', 'x-ss-dp': '8662',
-        'x-khronos': String(khronos), 'x-ss-stub': md5(body),
-        'x-gorgon': xGorgon(query, body, khronos, Math.floor(Math.random() * 65536)),
-        'x-ladon': be32(khronos).toString('base64'), 'x-argus': le32(khronos).toString('base64'),
-        'x-helios': helios(khronos), 'x-medusa': buildMedusa(url, body, khronos, device),
-    } };
+        'Content-Type': 'application/json; charset=UTF-8', 'Content-Encoding': 'gzip',
+        'sdk-version': '2', 'passport-sdk-version': '5051452', 'x-xs-from-web': '0', 'x-ss-dp': '8662',
+        ...PlayerSigner.headers(query, body, khronos),
+    };
+    if (cookie) headers.Cookie = cookie;
+    return { url: `${VIDEO_API}?${query}`, body, headers };
 }
 
 function parseSearchInteger(value) {
@@ -362,6 +363,8 @@ async function requestJson(url, options, deadline, signal) {
         }
         const parsed = typeof response.data === 'string' ? jsonBody(raw) : response.data;
         if (!parsed || typeof parsed !== 'object') throw Object.assign(new Error('App 接口未返回有效数据'), { code: 'INVALID_RESPONSE' });
+        // 设备注册需要读取 Set-Cookie；不可枚举，不会混进序列化结果
+        Object.defineProperty(parsed, '_headers', { value: response.headers, enumerable: false });
         return parsed;
     }
     throw Object.assign(new Error('App 片源跳转次数过多'), { code: 'SECURITY_BLOCKED' });
@@ -376,6 +379,7 @@ async function fetchAppPlayUrl(vid, options = {}) {
     const timeoutSignal = AbortSignal.timeout(12000);
     const signal = options.signal ? AbortSignal.any([timeoutSignal, options.signal]) : timeoutSignal;
     const payload = JSON.stringify({
+        dr_scene: 'player',
         biz_param: { detail_page_version: 0, device_level: 3, disable_digg_stat: false, need_all_video_definition: true, need_mp4_align: false, use_os_player: false, use_server_dns: false, video_platform: 1024 },
         mixed_video_id_map: { '1004': [vid] },
     });

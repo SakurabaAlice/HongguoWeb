@@ -125,6 +125,7 @@ docker run -d --name hongguoweb --restart unless-stopped --network host --memory
 
 - 强制刷新（Ctrl+Shift+R）会让本页绕过 Service Worker，普通刷新一次即可恢复直连。
 - 签名取址和匿名设备注册仍由服务器发起。如果服务器 IP 被红果风控，所有功能都会受影响，与传输方式无关。
+- 如果只有播放提示「App 接口返回空响应」，目录和搜索都正常，通常是红果收紧了播放接口的风控，现有签名失效了（2026 年 11 月出现过一次）。这种情况换设备、重试都没用，需要更新 `server/native/` 里的签名实现。
 - 登录状态按网址分别保存，在不同域名下访问需要分别扫码登录。
 
 ## 红果账号：每个浏览器登录自己的账号
@@ -203,7 +204,7 @@ web/
 ## 致谢与许可
 
 `server/native/` 和 `server/services/` 下的协议、解密与流媒体代码来自
-[zfdang/hongguo-open-player](https://github.com/zfdang/hongguo-open-player)（commit `61d9d36`），
+[zfdang/hongguo-open-player](https://github.com/zfdang/hongguo-open-player)（commit `61d9d36`；播放取址的签名与请求格式更新自 commit `79ca8f3`），
 原始出处见各文件头部注释。该项目又参考了 zhangbaio/hongguo、N3urda/hongguoTV、woshishiq1/drpys、
 jackotom/hongguo-drama、yangbin1322/hongguo-player 等社区项目。
 

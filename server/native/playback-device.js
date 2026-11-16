@@ -4,13 +4,25 @@
 // commit 388931852ddc614db8b00775a3dc54c5ede6307f,
 // kotlin-tv/core/src/main/kotlin/com/hongguotv/core/DeviceRegister.kt
 // (itself adapted from charlie901208/HGTV feat/phone-login, GPL-3.0-only).
-// Changes: fixed anonymous phone profile; process-only identity; no cookies or tokens.
+// Changes: fixed anonymous phone profile; process-only identity; no tokens. The shared
+// playback/search device registers as 7.4.3.32 and keeps only the protocol identity
+// cookies (install_id, store-region, store-region-src) in memory, following
+// zfdang/hongguo-open-player@79ca8f3. Account devices keep the 7.3.9.32 profile.
 const crypto = require('node:crypto');
 const { gzipSync } = require('node:zlib');
 const logger = require('../services/logger');
 
 const REGISTER_URL = 'https://log5-applog-lf.fqnovel.com/service/2/device_register/?tt_data=a&cronet_version=8d40f833_2026-03-03&ttnet_version=4.2.243.31-douyin&use_store_region_cookie=1';
 const KDF_SALT = Buffer.from('4dd4c2e6b83162090e52b3c7a6733ba41cb2462b829ab58a196b39db57177524f49baf7f08e8d68d26a72e37c1a95a2f1f05a51892aef2949732b62a38aadd58', 'hex');
+// playback：播放与搜索共用的设备，与取址请求的 App 版本一致（2026-11 风控收紧后实测可用）
+// account：每个浏览器的账号设备，沿用原有版本，账号接口未受这次风控影响
+const PROFILES = {
+    playback: { version: '7.4.3.32', code: 74332,
+        ua: 'com.phoenix.read/74332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)' },
+    account: { version: '7.3.9.32', code: 73932,
+        ua: 'com.phoenix.read/72232 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)' },
+};
+const IDENTITY_COOKIES = new Set(['install_id', 'store-region', 'store-region-src']);
 
 function responseId(response, name) {
     const preferred = response?.[`${name}_str`];
@@ -19,13 +31,28 @@ function responseId(response, name) {
     return typeof value === 'string' && /^\d{1,30}$/.test(value) && /[1-9]/.test(value) ? value : '';
 }
 
-function createRegistrationRequest() {
+// 只保留三个协议身份 Cookie（不含 ttreq 等一次性令牌）；注册响应没带时按协议默认值补齐
+function identityCookie(headers, iid) {
+    const raw = headers?.['set-cookie'];
+    const pairs = new Map();
+    for (const row of Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []) {
+        const pair = String(row).split(';')[0];
+        const eq = pair.indexOf('=');
+        if (eq <= 0) continue;
+        const name = pair.slice(0, eq).trim(), value = pair.slice(eq + 1).trim();
+        if (IDENTITY_COOKIES.has(name) && /^[\w.-]{1,64}$/.test(value)) pairs.set(name, value);
+    }
+    if (!pairs.size) return `store-region=cn-bj; store-region-src=did; install_id=${iid}`;
+    return [...pairs].map(([name, value]) => `${name}=${value}`).join('; ');
+}
+
+function createRegistrationRequest(profile) {
     const now = Date.now();
     const cdid = crypto.randomUUID();
     const header = {
-        display_name: '红果免费短剧', update_version_code: 73932, manifest_version_code: 73932,
-        app_version_minor: '7.3.9.32', aid: 8662, channel: 'update_64', package: 'com.phoenix.read',
-        app_version: '7.3.9.32', version_code: 73932, sdk_version: '3.7.0-rc.34-fanqie-xiaoshuo',
+        display_name: '红果免费短剧', update_version_code: profile.code, manifest_version_code: profile.code,
+        app_version_minor: profile.version, aid: 8662, channel: 'update_64', package: 'com.phoenix.read',
+        app_version: profile.version, version_code: profile.code, sdk_version: '3.7.0-rc.34-fanqie-xiaoshuo',
         sdk_target_version: 29, git_hash: '3a88f4e', os: 'Android', os_version: '16', os_api: 36,
         device_model: '25053RT47C', device_brand: 'Redmi', device_manufacturer: 'Redmi',
         cpu_abi: 'arm64-v8a', release_build: 'b5e187f', density_dpi: 520, display_density: 'mdpi',
@@ -50,7 +77,7 @@ function createRegistrationRequest() {
     const options = {
         method: 'POST',
         headers: {
-            'User-Agent': 'com.phoenix.read/72232 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)',
+            'User-Agent': profile.ua,
             Accept: 'application/json', 'Content-Type': 'application/octet-stream;tt-data=a',
             'log-encode-type': 'gzip', 'x-ss-dp': '8662', 'x-ss-req-ticket': String(now),
             'x-vc-bdturing-sdk-version': '4.0.3.cn', lc: '101', 'sdk-version': '2',
@@ -70,14 +97,16 @@ function retryable(error) {
     ].includes(error.code);
 }
 
-function createPlaybackDeviceRegistrar() {
+function createPlaybackDeviceRegistrar({ profile = 'account' } = {}) {
+    const registrationProfile = PROFILES[profile];
+    if (!registrationProfile) throw new Error(`未知的设备注册配置: ${profile}`);
     let registration;
     let request;
     const registrar = function getPlaybackDevice(requestJson) {
         // Concurrent playback/search requests share registration. Retries reuse the
         // same encrypted payload and identity, including after an exhausted attempt.
         registration ||= Promise.resolve().then(async () => {
-            request ||= createRegistrationRequest();
+            request ||= createRegistrationRequest(registrationProfile);
             logger.info('PlaybackDevice', `开始匿名设备注册, cdid=${request.cdid}`);
             const deadline = Date.now() + 8000;
             for (let attempt = 0; attempt < 3; attempt++) {
@@ -93,7 +122,9 @@ function createPlaybackDeviceRegistrar() {
                     const iid = responseId(response, 'install_id');
                     if (!device_id || !iid) throw Object.assign(new Error('Invalid registration'), { code: 'INVALID_REGISTRATION' });
                     logger.info('PlaybackDevice', `匿名设备注册成功: device_id=${device_id}, iid=${iid}`);
-                    return Object.freeze({ device_id, iid, cdid: request.cdid });
+                    // cookie 只给服务端取址使用，不返回给浏览器（account.js 只取三个设备号）
+                    return Object.freeze({ device_id, iid, cdid: request.cdid,
+                        cookie: identityCookie(response._headers, iid) });
                 } catch (error) {
                     if (attempt === 2 || !retryable(error) || Date.now() >= deadline) throw error;
                     await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
@@ -116,5 +147,5 @@ function createPlaybackDeviceRegistrar() {
     return registrar;
 }
 
-const getPlaybackDevice = createPlaybackDeviceRegistrar();
+const getPlaybackDevice = createPlaybackDeviceRegistrar({ profile: 'playback' });
 module.exports = { getPlaybackDevice, createPlaybackDeviceRegistrar };

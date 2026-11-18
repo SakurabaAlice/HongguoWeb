@@ -5,16 +5,17 @@
 // via N3urda/hongguoTV eea73e6a45569a2cbbb9440f7cd5290c459b0b70.
 // Changes: registered in-memory playback identity; pure JS SM3;
 // bounded HTTPS transport; exact episode matching; supported codec selection.
-// 2026-11: playback request follows zfdang/hongguo-open-player@79ca8f3 (#92, #103):
-// reading.snssdk.com endpoint, 7.4.3.32 profile, gzip body, Argus/Ladon signing
-// (argus.js) and protocol identity cookies.
+// 2026-11: playback request uses the v04.10.03 mobile "v5" signing from
+// zfdang/hongguo-open-player PR #107 (big-li99@a3e6269, ported from N3urda/hongguoTV):
+// reading.snssdk.com endpoint, gzip body, x-helios/x-medusa v5 (v5-sign.js) and
+// protocol identity cookies. Device resets after empty responses are rate-limited.
 // Crypto tables and SDK protocol constants below are not user credentials.
 const crypto = require('node:crypto');
 const { gzipSync } = require('node:zlib');
 const logger = require('../services/logger');
 const { getPlaybackDevice } = require('./playback-device');
 const sm3 = require('./sm3');
-const { PlayerSigner } = require('./argus');
+const { signPlaybackV5 } = require('./v5-sign');
 const { normalizeDownloadQuality, meetsDownloadQuality } = require('./download-quality');
 const localId = () => String(1000000000000000n + BigInt('0x' + crypto.randomBytes(6).toString('hex')));
 const PROCESS_NONCE = crypto.randomBytes(18).toString('base64url');
@@ -32,8 +33,16 @@ const DEVICE = {
     update_version_code: '71332', host_abi: 'arm64-v8a', dragon_device_type: 'phone', pv_player: '71332',
     compliance_status: '0', need_personal_recommend: '1', player_so_load: '1', is_android_pad_screen: '0',
 };
-const PLAYBACK_DEVICE = { ...DEVICE, version_code: '74332', version_name: '7.4.3.32',
-    manifest_version_code: '74332', update_version_code: '74332', pv_player: '74332' };
+// v5 播放签名对应的官方 7.3.9.32 PGT-AN10 机型资料（见 hongguoTV MobilePlayback.kt）
+const V5_PLAYBACK_UA = 'com.phoenix.read/73932 (Linux; U; Android 12; zh_CN_#Hans; PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)';
+const V5_PLAYBACK_QUERY = {
+    aid: '8662', app_name: 'novelread', version_code: '74332', version_name: '7.4.3.32',
+    channel: 'vivo_8662_64', device_platform: 'android', device_type: 'PGT-AN10',
+    os_version: '12', update_version_code: '74332',
+};
+// 空响应时最多换一次设备，之后这段时间内直接报错，避免签名失效时反复注册设备
+const DEVICE_RESET_COOLDOWN_MS = 10 * 60 * 1000;
+let lastDeviceResetAt = 0;
 function str(value, fallback = '') { return String(value == null ? fallback : value).trim(); }
 function cleanUrl(value) { return str(value).replace(/\\\//g, '/').replace(/\\u0026/g, '&').replace(/&amp;/g, '&'); }
 function jsonBody(value) { try { return JSON.parse(value); } catch { return null; } }
@@ -137,20 +146,15 @@ function helios(khronos) {
 }
 
 function branchOf(url, body, khronos) { const bodyMd5 = body ? crypto.createHash('md5').update(body).digest() : Buffer.alloc(16); const q = sm3(url.split('?')[1]); const iv = getIv(getIv(getIv(0x20230928, q), bodyMd5), le32(khronos)); const low = iv & 15; return low - (((low * 171) >> 9) * 3); }
-// 2026-11-10 起占位的 x-argus / x-ladon 会被播放接口拒绝（HTTP 200 空响应），须用完整签名
+// 播放接口签名不对时返回 HTTP 200 空响应：2026-11-10 起拒绝占位签名，11-16 晚起拒绝 Argus/Ladon，
+// 目前只认 v5 签名（设备号同时写进 query 和 medusa 明文）。搜索、目录等接口仍用本文件里的 v3 签名。
 function playbackRequest(payload, identity) {
     const body = gzipSync(Buffer.from(payload));
-    const khronos = Math.floor(Date.now() / 1000);
     const { device_id, iid, cdid, cookie } = identity;
-    const query = pythonUrlEncode({ ...PLAYBACK_DEVICE, device_id, iid, cdid, _rticket: String(Date.now()) });
-    const headers = {
-        'User-Agent': PLAYBACK_UA, Accept: 'application/json; charset=utf-8,application/x-protobuf',
-        'Content-Type': 'application/json; charset=UTF-8', 'Content-Encoding': 'gzip',
-        'sdk-version': '2', 'passport-sdk-version': '5051452', 'x-xs-from-web': '0', 'x-ss-dp': '8662',
-        ...PlayerSigner.headers(query, body, khronos),
-    };
+    const { url, headers: signed } = signPlaybackV5(VIDEO_API, { ...V5_PLAYBACK_QUERY, iid, cdid, device_id }, body);
+    const headers = { 'User-Agent': V5_PLAYBACK_UA, Accept: 'application/json', 'Content-Encoding': 'gzip', ...signed };
     if (cookie) headers.Cookie = cookie;
-    return { url: `${VIDEO_API}?${query}`, body, headers };
+    return { url, body, headers };
 }
 
 function parseSearchInteger(value) {
@@ -379,23 +383,26 @@ async function fetchAppPlayUrl(vid, options = {}) {
     const timeoutSignal = AbortSignal.timeout(12000);
     const signal = options.signal ? AbortSignal.any([timeoutSignal, options.signal]) : timeoutSignal;
     const payload = JSON.stringify({
-        dr_scene: 'player',
-        biz_param: { detail_page_version: 0, device_level: 3, disable_digg_stat: false, need_all_video_definition: true, need_mp4_align: false, use_os_player: false, use_server_dns: false, video_platform: 1024 },
+        biz_param: { detail_page_version: 0, device_level: 1, disable_digg_stat: false, disable_video_relate_book: false, need_all_video_definition: true, need_mp4_align: false, use_os_player: false, use_server_dns: false, video_platform: 1024 },
         mixed_video_id_map: { '1004': [vid] },
+        dr_scene: 'player',
     });
     let signed = playbackRequest(payload, await getPlaybackDevice(requestJson));
     let response;
     try {
         response = await requestJson(signed.url, { method: 'POST', headers: signed.headers, data: signed.body }, deadline, signal);
     } catch (err) {
-        if (err.code === 'EMPTY_RESPONSE' && typeof getPlaybackDevice.reset === 'function') {
-            logger.warn('AppSource', 'App 接口返回空响应，可能当前设备鉴权失效，重置设备并重试...');
-            getPlaybackDevice.reset();
-            signed = playbackRequest(payload, await getPlaybackDevice(requestJson));
-            response = await requestJson(signed.url, { method: 'POST', headers: signed.headers, data: signed.body }, deadline, signal);
-        } else {
+        if (err.code !== 'EMPTY_RESPONSE' || typeof getPlaybackDevice.reset !== 'function') throw err;
+        const sinceReset = Date.now() - lastDeviceResetAt;
+        if (sinceReset < DEVICE_RESET_COOLDOWN_MS) {
+            logger.warn('AppSource', `App 接口返回空响应，距上次更换设备仅 ${Math.round(sinceReset / 1000)} 秒，冷却期内不再注册新设备`);
             throw err;
         }
+        lastDeviceResetAt = Date.now();
+        logger.warn('AppSource', 'App 接口返回空响应，可能当前设备鉴权失效，重置设备并重试（10 分钟内不再重复）...');
+        getPlaybackDevice.reset();
+        signed = playbackRequest(payload, await getPlaybackDevice(requestJson));
+        response = await requestJson(signed.url, { method: 'POST', headers: signed.headers, data: signed.body }, deadline, signal);
     }
     if (Number(response.Code || response.code || 0) !== 0) throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
     const entry = response.data?.[vid];

@@ -6,6 +6,7 @@ import { store } from '../store.js';
 import { media, markDirectFailure } from '../media.js';
 import { account, cloudProgress, syncProgress, refreshFavorites, isFavorite, setFavorite, openLogin } from '../account/store.js';
 import { toast } from '../toast.js';
+import { codecState, checkHevc, hevcGuide } from '../codec.js';
 import TransportBadge from '../components/TransportBadge.vue';
 import SiteFooter from '../components/SiteFooter.vue';
 
@@ -30,6 +31,10 @@ const retryToken = ref(0);
 const introOpen = ref(false);
 const isFullscreen = ref(false);
 const favoriteBusy = ref(false);
+// 播放中发现解不了视频：'black' 有声无画（画面尺寸为 0）/ 'decode' 浏览器报解码错误
+const codecProblem = ref('');
+const guideSteps = hevcGuide();
+let blackTimer = 0;
 let pendingSeek = 0;
 let resumed = false; // 本次续播位置来自红果账号
 
@@ -63,8 +68,11 @@ const transport = computed(() => {
   return { mode: 'direct' };
 });
 const mediaStatus = computed(() => current.value && media.statuses[`${current.value.vid}:${store.settings.quality}`]);
+// 播放前检测：浏览器不支持 HEVC 时先不播放，盖说明层（用户可选择仍要播放）
+const codecPending = computed(() => !codecState.result);
+const codecBlocked = computed(() => Boolean(codecState.result && !codecState.result.supported && !codecState.bypass));
 const src = computed(() => {
-  if (!current.value) return null;
+  if (!current.value || codecPending.value || codecBlocked.value) return null;
   const options = { quality: store.settings.quality, nextVid: next.value?.vid, retry: retryToken.value || undefined };
   if (transport.value.mode === 'direct') return api.mediaUrl(current.value.vid, options);
   if (transport.value.mode === 'relay') return api.streamUrl(current.value.vid, options);
@@ -102,6 +110,8 @@ function setEpisode(n, { replace = false } = {}) {
   persist();
   ep.value = n;
   playError.value = '';
+  codecProblem.value = '';
+  clearTimeout(blackTimer);
   group.value = Math.floor((n - 1) / GROUP_SIZE);
   if (Number(route.query.ep) !== n) router[replace ? 'replace' : 'push']({ query: { ...route.query, ep: n } });
   document.title = `${series.value.series_title} 第${n}集 · 红果短剧`;
@@ -137,6 +147,34 @@ function persist(force = true) {
 }
 function onTimeUpdate() {
   persist(false);
+}
+// 播放中检测：开始播放 2 秒后声音在走、画面尺寸仍为 0，说明视频轨没解出来（有声无画）
+function onPlaying() {
+  buffering.value = false;
+  clearTimeout(blackTimer);
+  if (codecState.blackDismissed) return;
+  const vid = current.value?.vid;
+  blackTimer = setTimeout(() => {
+    const v = video.value;
+    if (!v || v.paused || current.value?.vid !== vid || document.visibilityState !== 'visible') return;
+    if (v.videoWidth === 0 && v.currentTime > 0.5) {
+      v.pause();
+      codecProblem.value = 'black';
+    }
+  }, 2000);
+}
+function continueWithoutVideo() {
+  codecState.blackDismissed = true;
+  codecProblem.value = '';
+  video.value?.play().catch(() => {});
+}
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('已复制，请粘贴到地址栏打开');
+  } catch {
+    toast(`复制失败，请手动输入：${text}`);
+  }
 }
 function onVisibility() {
   if (document.visibilityState === 'hidden') persist();
@@ -192,12 +230,17 @@ async function onError() {
     playError.value = '无法连接本地服务';
     return;
   }
-  playError.value = code === 4 || code === 3
-    ? '浏览器无法解码该视频。红果片源多为 HEVC (H.265) 编码，请使用最新版 Chrome / Edge 并开启硬件加速，或尝试切换清晰度。'
-    : '视频加载中断，请重试';
+  if (code === 4 || code === 3) {
+    // 视频源本身可用但浏览器解码失败：给出与 HEVC 检测相同的引导
+    playError.value = '';
+    codecProblem.value = 'decode';
+    return;
+  }
+  playError.value = '视频加载中断，请重试';
 }
 function retry() {
   playError.value = '';
+  codecProblem.value = '';
   pendingSeek = video.value?.currentTime || pendingSeek;
   retryToken.value += 1;
 }
@@ -287,6 +330,7 @@ function formatTime(seconds) {
 }
 
 onMounted(() => {
+  checkHevc();
   loadSeries();
   window.addEventListener('keydown', onKeydown, true);
   window.addEventListener('beforeunload', persist);
@@ -296,6 +340,7 @@ onMounted(() => {
   stage.value?.addEventListener('wheel', onWheel, { passive: false });
 });
 onBeforeUnmount(() => {
+  clearTimeout(blackTimer);
   persist();
   window.removeEventListener('keydown', onKeydown, true);
   window.removeEventListener('beforeunload', persist);
@@ -325,13 +370,13 @@ onBeforeUnmount(() => {
           @error="onError"
           @waiting="buffering = true"
           @loadstart="buffering = true"
-          @playing="buffering = false"
+          @playing="onPlaying"
           @canplay="buffering = false"
           @volumechange="onVolumeChange"
           @ratechange="onRateChange"
         />
         <div v-if="series && current" class="stage-title">{{ series.series_title }} · 第 {{ ep }} 集</div>
-        <div v-if="(buffering || !media.checked || (!series && !loadError)) && !playError" class="stage-mask"><div class="spinner" /></div>
+        <div v-if="(buffering || !media.checked || codecPending || (!series && !loadError)) && !playError && !codecBlocked && !codecProblem" class="stage-mask"><div class="spinner" /></div>
         <div v-if="loadError" class="stage-mask error">
           <p>{{ loadError }}</p>
           <button class="primary" @click="loadSeries">重新加载</button>
@@ -339,6 +384,26 @@ onBeforeUnmount(() => {
         <div v-else-if="transport.mode === 'none' && series" class="stage-mask error">
           <p>无法播放：{{ transport.reason }}</p>
           <button v-if="store.settings.transport !== 'auto'" class="primary" @click="store.settings.transport = 'auto'">改为自动模式</button>
+        </div>
+        <div v-else-if="(codecBlocked || codecProblem) && series" class="stage-mask guide">
+          <h3 v-if="codecProblem === 'black'">检测到只有声音、没有画面</h3>
+          <h3 v-else-if="codecProblem === 'decode'">浏览器无法解码这个视频</h3>
+          <h3 v-else>当前浏览器无法播放这个视频的画面</h3>
+          <p class="guide-lead">红果的视频是 HEVC (H.265) 编码，当前浏览器解码不了，直接播放会只有声音、画面黑屏。可以按下面的方法处理：</p>
+          <ol>
+            <li v-for="(step, i) in guideSteps" :key="i">
+              {{ step.text }}
+              <span v-if="step.copy" class="guide-copy"><code>{{ step.copy }}</code><button @click="copyText(step.copy)">复制</button></span>
+              <span v-if="step.links" class="guide-links">
+                <a v-for="l in step.links" :key="l.href" :href="l.href" target="_blank" rel="noopener noreferrer">{{ l.label }}</a>
+              </span>
+            </li>
+          </ol>
+          <div class="guide-actions">
+            <button v-if="codecBlocked" @click="codecState.bypass = true">仍要播放（可能只有声音）</button>
+            <button v-else-if="codecProblem === 'black'" @click="continueWithoutVideo">继续播放（只有声音）</button>
+            <button v-else class="primary" @click="retry">重试</button>
+          </div>
         </div>
         <div v-else-if="playError" class="stage-mask error">
           <p>{{ playError }}</p>
@@ -459,6 +524,19 @@ onBeforeUnmount(() => {
 }
 .stage-mask.error { background: rgba(0,0,0,.82); pointer-events: auto; padding: 0 15%; text-align: center; color: #ffb3bf; }
 .stage-mask.error button { min-width: 120px; }
+.stage-mask.guide {
+  background: rgba(0,0,0,.88); pointer-events: auto; overflow-y: auto;
+  align-items: stretch; justify-content: flex-start; gap: 8px;
+  padding: 32px max(24px, calc(50% - 300px)); font-size: 14px; line-height: 1.6;
+}
+.guide h3 { margin: 0; font-size: 18px; color: #ffb3bf; }
+.guide-lead { margin: 0; color: var(--text-dim); }
+.guide ol { margin: 4px 0 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; }
+.guide-copy, .guide-links { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-left: 6px; }
+.guide-copy code { padding: 1px 6px; border-radius: 4px; background: var(--bg-hover); user-select: all; }
+.guide-copy button { padding: 1px 10px; font-size: 12px; }
+.guide-links a { color: var(--accent); text-decoration: underline; }
+.guide-actions { display: flex; gap: 10px; margin-top: 10px; }
 
 .toolbar {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;

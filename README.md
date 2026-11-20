@@ -125,7 +125,7 @@ docker run -d --name hongguoweb --restart unless-stopped --network host --memory
 
 - 强制刷新（Ctrl+Shift+R）会让本页绕过 Service Worker，普通刷新一次即可恢复直连。
 - 签名取址和匿名设备注册仍由服务器发起。如果服务器 IP 被红果风控，所有功能都会受影响，与传输方式无关。
-- 如果只有播放提示「App 接口返回空响应」，目录和搜索都正常，通常是红果收紧了播放接口的风控，现有签名失效了（2026 年 11 月先后出现过两次）。这种情况换设备、重试都没用，需要更新 `server/native/` 里的签名实现。服务遇到空响应时只换一次设备重试，之后 10 分钟内直接报错，不再注册新设备，避免签名失效时反复注册。
+- 如果只有播放提示「App 接口返回空响应」，目录和搜索都正常，通常是红果收紧了播放接口的风控，现有签名失效了（2026 年 11 月先后出现过三次）。这种情况换设备、重试都没用，需要更新 `server/native/` 里的签名实现。服务会依次尝试 v5 播放接口和两台主机上的 `video_tab` 备用接口，并记住上次可用的那条；全部空响应时只换一次设备重试，之后 10 分钟内直接报错，不再注册新设备，避免签名失效时反复注册。
 - 登录状态按网址分别保存，在不同域名下访问需要分别扫码登录。
 
 ## 红果账号：每个浏览器登录自己的账号
@@ -204,7 +204,7 @@ web/
 ## 致谢与许可
 
 `server/native/` 和 `server/services/` 下的协议、解密与流媒体代码来自
-[zfdang/hongguo-open-player](https://github.com/zfdang/hongguo-open-player)（commit `61d9d36`；播放取址的 v5 签名来自其 PR #107，commit `a3e6269`，移植自 N3urda/hongguoTV），
+[zfdang/hongguo-open-player](https://github.com/zfdang/hongguo-open-player)（commit `61d9d36`；播放取址的 v5 签名来自其 PR #107，commit `a3e6269`，移植自 N3urda/hongguoTV；`video_tab` 备用接口参考 hongguoTV 0.16.10 与 zz6583489-collab/hongguo-open-player 的 commit `9431817`），
 原始出处见各文件头部注释。该项目又参考了 zhangbaio/hongguo、N3urda/hongguoTV、woshishiq1/drpys、
 jackotom/hongguo-drama、yangbin1322/hongguo-player 等社区项目。
 

@@ -9,6 +9,8 @@
 // zfdang/hongguo-open-player PR #107 (big-li99@a3e6269, ported from N3urda/hongguoTV):
 // reading.snssdk.com endpoint, gzip body, x-helios/x-medusa v5 (v5-sign.js) and
 // protocol identity cookies. Device resets after empty responses are rate-limited.
+// 2026-11-20: GET video_tab fallback (idea from hongguoTV 0.16.10; v5-signed form from
+// zz6583489-collab/hongguo-open-player@9431817), tried in last-success-first order.
 // Crypto tables and SDK protocol constants below are not user credentials.
 const crypto = require('node:crypto');
 const { gzipSync } = require('node:zlib');
@@ -43,6 +45,15 @@ const V5_PLAYBACK_QUERY = {
 // 空响应时最多换一次设备，之后这段时间内直接报错，避免签名失效时反复注册设备
 const DEVICE_RESET_COOLDOWN_MS = 10 * 60 * 1000;
 let lastDeviceResetAt = 0;
+// 取址路线：v5 POST 与两台主机上的 video_tab GET。只有空响应才换下一条，并记住上次可用的那条，
+// 下次先试它（POST 失效期间不必每次先白发一个请求，POST 恢复后也会自动用回去）
+const TAB_API_PATH = '/reading/bookapi/video_tab/multi_video_model/v1/';
+const PLAYBACK_ROUTES = [
+    { kind: 'post', api: VIDEO_API, label: 'v5 播放接口' },
+    { kind: 'tab', api: `https://api5-normal-sinfonlineb.fqnovel.com${TAB_API_PATH}`, label: 'video_tab（sinfonlineb）' },
+    { kind: 'tab', api: `https://api5-normal-hl.fqnovel.com${TAB_API_PATH}`, label: 'video_tab（hl）' },
+];
+let preferredRoute = 0;
 function str(value, fallback = '') { return String(value == null ? fallback : value).trim(); }
 function cleanUrl(value) { return str(value).replace(/\\\//g, '/').replace(/\\u0026/g, '&').replace(/&amp;/g, '&'); }
 function jsonBody(value) { try { return JSON.parse(value); } catch { return null; } }
@@ -155,6 +166,54 @@ function playbackRequest(payload, identity) {
     const headers = { 'User-Agent': V5_PLAYBACK_UA, Accept: 'application/json', 'Content-Encoding': 'gzip', ...signed };
     if (cookie) headers.Cookie = cookie;
     return { url, body, headers };
+}
+
+// video_tab：GET、无请求体，同一设备与 v5 签名，版本资料改为 7.3.9.32，分集参数取自官方 GetVideoModelRequest
+function tabRequest(vid, identity, api) {
+    const { device_id, iid, cdid, cookie } = identity;
+    const values = {
+        ...V5_PLAYBACK_QUERY, version_code: '73932', manifest_version_code: '73932', update_version_code: '73932',
+        pv_player: '73932', version_name: '7.3.9.32', iid, cdid, device_id,
+        video_id: String(vid), video_id_type: '0', device_level: '1', need_all_video_definition: '1',
+        need_mp4_align: '0', use_os_player: '0', video_platform: '1024', source: '0', from_video_id: '',
+    };
+    const { url, headers: signed } = signPlaybackV5(api, values, null);
+    const headers = { 'User-Agent': V5_PLAYBACK_UA, Accept: 'application/json; charset=utf-8', ...signed };
+    if (cookie) headers.Cookie = cookie;
+    return { url, headers };
+}
+
+// video_tab 把模型放在 data.video_model_data[vid]，转成与 POST 相同的 data[vid] 结构，后续解析共用
+function normalizeTabResponse(raw, vid) {
+    if (Number(raw?.Code || raw?.code || 0) !== 0) return raw;
+    const entry = (raw?.data?.video_model_data || raw?.data || {})[vid];
+    return { code: 0, data: entry?.video_model ? { [vid]: { video_model: entry.video_model } } : {} };
+}
+
+// 按"上次可用的路线优先"依次尝试；非空响应即视为该路线签名被接受，其他错误照常抛出
+async function requestPlayback(vid, payload, device, deadline, signal) {
+    let lastEmpty;
+    for (const index of new Set([preferredRoute, ...PLAYBACK_ROUTES.keys()])) {
+        const route = PLAYBACK_ROUTES[index];
+        let response;
+        try {
+            if (route.kind === 'post') {
+                const signed = playbackRequest(payload, device);
+                response = await requestJson(signed.url, { method: 'POST', headers: signed.headers, data: signed.body }, deadline, signal);
+            } else {
+                const signed = tabRequest(vid, device, route.api);
+                response = normalizeTabResponse(await requestJson(signed.url, { method: 'GET', headers: signed.headers }, deadline, signal), vid);
+            }
+        } catch (err) {
+            if (err.code !== 'EMPTY_RESPONSE') throw err;
+            lastEmpty = err;
+            continue;
+        }
+        if (index !== preferredRoute) logger.info('AppSource', `取址改走${route.label}`);
+        preferredRoute = index;
+        return response;
+    }
+    throw lastEmpty;
 }
 
 function parseSearchInteger(value) {
@@ -387,22 +446,20 @@ async function fetchAppPlayUrl(vid, options = {}) {
         mixed_video_id_map: { '1004': [vid] },
         dr_scene: 'player',
     });
-    let signed = playbackRequest(payload, await getPlaybackDevice(requestJson));
     let response;
     try {
-        response = await requestJson(signed.url, { method: 'POST', headers: signed.headers, data: signed.body }, deadline, signal);
+        response = await requestPlayback(vid, payload, await getPlaybackDevice(requestJson), deadline, signal);
     } catch (err) {
         if (err.code !== 'EMPTY_RESPONSE' || typeof getPlaybackDevice.reset !== 'function') throw err;
         const sinceReset = Date.now() - lastDeviceResetAt;
         if (sinceReset < DEVICE_RESET_COOLDOWN_MS) {
-            logger.warn('AppSource', `App 接口返回空响应，距上次更换设备仅 ${Math.round(sinceReset / 1000)} 秒，冷却期内不再注册新设备`);
+            logger.warn('AppSource', `取址各接口均返回空响应，距上次更换设备仅 ${Math.round(sinceReset / 1000)} 秒，冷却期内不再注册新设备`);
             throw err;
         }
         lastDeviceResetAt = Date.now();
-        logger.warn('AppSource', 'App 接口返回空响应，可能当前设备鉴权失效，重置设备并重试（10 分钟内不再重复）...');
+        logger.warn('AppSource', '取址各接口均返回空响应，可能当前设备鉴权失效，重置设备并重试（10 分钟内不再重复）...');
         getPlaybackDevice.reset();
-        signed = playbackRequest(payload, await getPlaybackDevice(requestJson));
-        response = await requestJson(signed.url, { method: 'POST', headers: signed.headers, data: signed.body }, deadline, signal);
+        response = await requestPlayback(vid, payload, await getPlaybackDevice(requestJson), deadline, signal);
     }
     if (Number(response.Code || response.code || 0) !== 0) throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
     const entry = response.data?.[vid];
